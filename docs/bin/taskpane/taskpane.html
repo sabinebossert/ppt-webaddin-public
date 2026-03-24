@@ -1,0 +1,328 @@
+﻿<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=Edge" />
+
+    <script src="../Scripts/jquery-3.6.0.js"></script>
+    <script src="../Scripts/MessageBanner.js"></script>
+    <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+
+    <!-- Core -->
+    <script src="../core/utils.js"></script>
+
+    <!-- PowerPoint Logic -->
+    <script src="../features/pptLogic.js"></script>
+
+
+    <!-- Features -->
+    <script src="../features/roundedCorners.js"></script>
+
+    <!-- Taskpane controller -->
+    <script src="taskpane.js"></script>
+
+    <link href="../Content/Button.css" rel="stylesheet" />
+    <link href="../Content/MessageBanner.css" rel="stylesheet" />
+
+    <style>
+        /* ======================= */
+        /* Seitenspezifischer Stil */
+        /* ======================= */
+
+        html {
+            position: relative;
+            min-height: 100%;
+        }
+
+        body {
+            margin: 0 0 40px; /* bottom = footer height */
+            background-color: #5F687E; /* Panel-Hintergrund */
+            color: #ffffff;
+            font-family: "Segoe UI", Arial, sans-serif;
+        }
+
+        .footer {
+            position: absolute;
+            left: 0;
+            bottom: 0;
+            height: 40px;
+            width: 100%;
+        }
+
+        .padding {
+            padding: 15px;
+        }
+
+        /* Notification-Banner-Positionierung wie früher */
+        #notification-popup.MessageBanner {
+            position: absolute;
+            left: 0px;
+            bottom: 0px;
+            text-align: left;
+            height: inherit;
+            min-width: inherit;
+        }
+
+        #notification-popup .MessageBanner-text {
+            margin: 0;
+            padding: 18px 15px;
+            min-width: inherit;
+        }
+
+        /* ======================= */
+        /* COLOR VARIABLES         */
+        /* ======================= */
+
+        /* LIGHT MODE (Default) */
+        :root {
+            --bg: #E0E2E8;
+            --panel-bg: #E0E2E8; /* #5F687E;*/
+            --text: #000000;
+            --text-inverse: #5F687E;
+            --subtitle: #333333;
+            --primary-btn-bg: #F62634;
+            --primary-btn-text: #ffffff;
+            --secondary-btn-bg: #3C4655;
+            --secondary-btn-text: #ffffff;
+            --input-bg: #ffffff;
+            --input-text: #000000;
+        }
+
+        /* DARK MODE */
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --bg: #2B2F3A;
+                --panel-bg: #3C4655;
+                --text: #ffffff;
+                --text-inverse: #ffffff;
+                --subtitle: #dddddd;
+                --primary-btn-bg: #F62634;
+                --primary-btn-text: #ffffff;
+                --secondary-btn-bg: #5F687E;
+                --secondary-btn-text: #ffffff;
+                --input-bg: #ffffff;
+                --input-text: #000000;
+            }
+        }
+
+        /* ======================= */
+        /* APPLY VARIABLES         */
+        /* ======================= */
+
+        body {
+            background-color: var(--panel-bg) !important;
+            color: var(--text) !important;
+        }
+
+        /* Titel / Untertitel */
+        .title {
+            font-size: 20px;
+            color: var(--text-inverse);
+            margin-bottom: 10px;
+        }
+
+        .subtitle {
+            font-size: 11px;
+            color: var(--text-inverse);
+            margin-bottom: 16px;
+        }
+
+        /* Labels & Input */
+        .section-label {
+            font-size: 14px;
+            margin-bottom: 6px;
+            display: block;
+            color: var(--text-inverse);
+        }
+
+        .radius-input {
+            width: 90px;
+            padding: 4px;
+            margin-bottom: 14px;
+            border-radius: 4px;
+            border: none;
+            background: var(--input-bg);
+            color: var(--input-text);
+        }
+
+        /* Presets */
+        .preset-container {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 22px;
+        }
+
+        .preset-btn {
+            padding: 6px 14px;
+            border: 1px solid #ccc;
+            background: #f3f3f3;
+            color: #000000;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+
+            .preset-btn:hover {
+                background: #e5e5e5;
+            }
+
+        /* Radiobuttons */
+        .radio-group {
+            margin-bottom: 20px;
+        }
+
+        .radio-line {
+            display: block;
+            margin: 4px 0;
+            font-size: 14px;
+            color: var(--text-inverse);
+        }
+
+        /* Buttons */
+        .action-btn-container {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            margin-top: 10px;
+        }
+
+        .action-btn {
+            padding: 10px;
+            border-radius: 4px;
+            font-size: 14px;
+            border: none;
+            cursor: pointer;
+        }
+
+        .action-btn.primary {
+            background: var(--primary-btn-bg);
+            color: var(--primary-btn-text);
+        }            
+
+        .action-btn.secondary {
+            background: var(--secondary-btn-bg);
+            color: var(--secondary-btn-text);
+        }
+
+        .action-btn:hover {
+            opacity: 0.9;
+        }
+
+        /* ======================= */
+        /* TABS                    */
+        /* ======================= */
+
+        #vppt-tabs {
+            display: flex;
+            gap: 6px;
+            margin-bottom: 12px;
+        }
+
+        .tab-button {
+            padding: 6px 12px;
+            border: none;
+            border-radius: 4px;
+            background: #3C4655;
+            color: #ffffff;
+            cursor: pointer;
+            font-size: 13px;
+        }
+
+            .tab-button.active {
+                background: #F62634;
+            }
+
+        .tab-panel {
+            display: none;
+        }
+
+            .tab-panel.active {
+                display: block;
+            }
+
+        /* Features, die noch nicht sichtbar sein sollen */
+        .hidden-feature {
+            display: none !important;
+        }
+    </style>
+</head>
+
+<body>
+    <!-- TABS -->
+    <div id="vppt-tabs">
+        <button class="tab-button hidden-feature" data-target="tab-rounded">Rounded Corners</button>
+        <button class="tab-button hidden-feature" data-target="tab-other">More Functions</button>
+    </div>
+
+    <!-- PANELS -->
+    <div id="tab-rounded" class="tab-panel active">
+        <div class="padding">
+
+            <p class="title">Normalize Border Radius</p>
+
+            <p class="subtitle">
+                Adapt the border radius for all shapes on the current slide. You can determine the radius and
+                whether the changes should be applied to selected shape(s) or all shapes on the current slide.
+                You can undo your changes if errors appear.
+            </p>
+
+            <!-- Presets -->
+            <div class="preset-container">
+                <button class="preset-btn" id="preset-radius-2">2 pt</button>
+                <button class="preset-btn" id="preset-radius-4">4 pt</button>
+                <button class="preset-btn" id="preset-radius-8">8 pt</button>
+            </div>
+
+            <!-- Radius Input -->
+            <label class="section-label" for="radiusInput">Border Radius (pt):</label>
+            <input id="radiusInput" type="number" value="4" class="radius-input" />
+
+            <!-- Scope -->
+            <label class="section-label">Scope:</label>
+            <div class="radio-group">
+                <label class="radio-line">
+                    <input type="radio" name="scopeRadio" value="selected" checked />
+                    Selected Shape(s) Only
+                </label>
+                <label class="radio-line">
+                    <input type="radio" name="scopeRadio" value="current" />
+                    Active Slide
+                </label>
+            </div>
+
+            <!-- Action Buttons -->
+            <div class="action-btn-container">
+                <button class="action-btn primary" id="normalize-corners-button">
+                    Apply border radius
+                </button>
+                <button class="action-btn secondary" id="undo-normalize-button">
+                    Undo last normalization
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <div id="tab-other" class="tab-panel hidden-feature">
+        <h3>Weitere Funktionen</h3>
+        <p>Noch leer – kommt später.</p>
+    </div>
+
+    <!-- Notification -->
+    <div class="MessageBanner" id="notification-popup">
+        <div class="MessageBanner-content">
+            <div class="MessageBanner-text">
+                <div class="MessageBanner-clipper">
+                    <div id="notification-header"></div>
+                    <div id="notification-body"></div>
+                </div>
+            </div>
+            <button class="MessageBanner-expand" style="display:none">
+                <i class="ms-Icon ms-Icon--chevronsDown"></i>
+            </button>
+            <div class="MessageBanner-action"></div>
+        </div>
+        <button class="MessageBanner-close">
+            <i class="ms-Icon ms-Icon--ChromeClose"></i>
+        </button>
+    </div>
+</body>
+</html>
