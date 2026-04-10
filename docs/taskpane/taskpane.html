@@ -243,10 +243,34 @@
         .hidden-feature {
             display: none !important;
         }
+		
+		/* ======================= */
+		/* ADD-IN HEADER           */
+		/* ======================= */
+		.addin-header {
+		  margin-bottom: 12px;
+		}
+
+		.addin-title {
+		  font-size: 16px;
+		  font-weight: 600;
+		  color: var(--text-inverse);
+		}
+
+		.addin-version {
+		  font-size: 11px;
+		  color: var(--subtitle);
+		}
     </style>
 </head>
 
 <body>
+	<div class="padding">
+	  <div class="addin-header">
+		<div class="addin-title">Vector PowerPoint Web Add‑in</div>
+		<div class="addin-version">Version 1.0.0.7</div>
+	  </div>
+	</div>
     <!-- TABS -->
     <div id="vppt-tabs">
         <button class="tab-button hidden-feature" data-target="tab-rounded">Rounded Corners</button>
@@ -257,13 +281,13 @@
     <div id="tab-rounded" class="tab-panel active">
         <div class="padding">
 
-            <p class="title">Normalize Border Radius</p>
+            <p class="title">Apply Border Radius</p>
 
             <p class="subtitle">
-                Adapt the border radius for all shapes on the current slide. You can determine the radius and
-                whether the changes should be applied to selected shape(s) or all shapes on the current slide.
-                You can undo your changes if errors appear.
-            </p>
+				Apply a uniform border radius to shapes on the slide.
+				Choose a value and apply it to selected shapes or to all shapes on the slide.
+				You can undo your changes if errors appear.
+			</p>
 
             <!-- Presets -->
             <div class="preset-container">
@@ -273,7 +297,7 @@
             </div>
 
             <!-- Radius Input -->
-            <label class="section-label" for="radiusInput">Border Radius (pt) (Default 4 pt):</label>
+            <label class="section-label" for="radiusInput">Border radius (pt) (Default 4 pt):</label>
             <input id="radiusInput" type="number" value="4" class="radius-input" />
 
             <!-- Scope -->
@@ -285,7 +309,7 @@
                 </label>
                 <label class="radio-line">
                     <input type="radio" name="scopeRadio" value="current" />
-                    Active slide
+                    All shapes on active slide
                 </label>
             </div>
 
@@ -295,15 +319,15 @@
                     Apply Border Radius
                 </button>
                 <button class="action-btn secondary" id="undo-normalize-button">
-                    Undo Last Normalization
+                    Undo Last Border Radius Change
                 </button>
             </div>
         </div>
     </div>
 
     <div id="tab-other" class="tab-panel hidden-feature">
-        <h3>Weitere Funktionen</h3>
-        <p>Noch leer – kommt später.</p>
+        <h3>Further functions</h3>
+        <p>still empty, follows later</p>
     </div>
 
     <!-- Notification -->
