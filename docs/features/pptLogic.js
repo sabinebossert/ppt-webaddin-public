@@ -346,9 +346,9 @@ async function applyUniformRoundedCorner(context, shape, radiusPts, applyChanges
         shape.left = originalLeft + 0.01;
         await context.sync();
 
-        shape.left = originalLeft;
+        //shape.left = originalLeft;
 
-        await context.sync();
+        //await context.sync();
 
         // 3) Queue dot removal + state restore (no sync here).
         if (isWeb && injectedState) {
