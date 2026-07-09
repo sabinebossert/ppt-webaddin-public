@@ -23,6 +23,7 @@ let lastNormalizationUndoData = null;
  * @param {{ applyChanges: boolean, scope: string }} options
  * @returns {Promise<object>} summary with counts
  */
+
 async function normalizeRectangleCorners(radiusPts, options) {
     const applyChanges = options.applyChanges;
     const scope = options.scope;
@@ -62,6 +63,9 @@ async function normalizeRectangleCorners(radiusPts, options) {
     await PowerPoint.run(async (context) => {
         const presentation = context.presentation;
 
+        // Deduplicate processing across the whole run (selected or current).
+        const processedIds = new Set();
+
         // ============================
         // Scope: SELECTED SHAPES ONLY
         // ============================
@@ -76,14 +80,14 @@ async function normalizeRectangleCorners(radiusPts, options) {
                     "No shapes selected",
                     "No shapes are selected. Please select one or more shapes or choose 'Active slide'."
                 );
-                summary.aborted = true;   // <--- NEU
+                summary.aborted = true;
                 return;
             }
 
             summary.slidesProcessed = 1;
 
             for (const shape of shapes) {
-                await processShapeCandidateBased(context, shape, radiusPts, applyChanges, summary);
+                await processShapeCandidateBased(context, shape, radiusPts, applyChanges, summary, processedIds);
             }
 
             return;
@@ -98,13 +102,13 @@ async function normalizeRectangleCorners(radiusPts, options) {
                 "No slide in scope",
                 "No active slide was found. Please click onto a slide and try again."
             );
-            summary.aborted = true;   // <--- NEU
+            summary.aborted = true;
             return;
         }
 
         for (const slide of slideRefs) {
             summary.slidesProcessed++;
-            await applyCornerRadiusOnCandidatesOnSlide(context, slide, radiusPts, applyChanges, summary);
+            await applyCornerRadiusOnCandidatesOnSlide(context, slide, radiusPts, applyChanges, summary, processedIds);
         }
     });
 
@@ -133,84 +137,161 @@ async function getSlidesByScope(context, presentation, scope) {
  * Applies the candidate-based corner-radius logic to all shapes on a slide.
  * Uses the same candidate criteria as debugApplyCornerRadiusOnCandidates.
  */
-async function applyCornerRadiusOnCandidatesOnSlide(context, slide, radiusPts, applyChanges, summary) {
+async function applyCornerRadiusOnCandidatesOnSlide(context, slide, radiusPts, applyChanges, summary, processedIds) {
     slide.shapes.load("items");
     await context.sync();
 
     const shapes = slide.shapes.items || [];
-    if (!shapes.length) {
-        return;
-    }
+    if (!shapes.length) return;
 
     for (const shape of shapes) {
-        await processShapeCandidateBased(context, shape, radiusPts, applyChanges, summary);
+        await processShapeCandidateBased(context, shape, radiusPts, applyChanges, summary, processedIds);
     }
 }
 
 /**
- * Processes a shape using the "candidate" heuristic:
- *  - handles groups recursively
- *  - only geometric shapes
- *  - exactly 1 adjustment
- *  - adjustment(0) <= 0.5
+ * Processes a shape using the rounded-rectangle candidate heuristic.
+ *
+ * A shape is considered a valid candidate if:
+ *  - it has exactly one adjustment
+ *  - adjustment(0) is a number in the range 0..0.5
+ *  - it has either a fill OR an outline (line)
+ *
+ * The shape type is intentionally NOT used as a filter:
+ * TextBox shapes can still represent rounded rectangles
+ * if they expose a valid corner-radius adjustment.
  */
-async function processShapeCandidateBased(context, shape, radiusPts, applyChanges, summary) {
-    shape.load(["id", "name", "type", "width", "height", "groupItems", "adjustments"]);
+async function processShapeCandidateBased(
+    context,
+    shape,
+    radiusPts,
+    applyChanges,
+    summary,
+    processedIds
+) {
+    // Load only what we need for early decisions
+    shape.load([
+        "id",
+        "name",
+        "type",
+        "level",
+        "left",
+        "top",
+        "width",
+        "height",
+        "rotation",
+        "adjustments",
+        "fill/type",
+        "lineFormat/visible"
+    ]);
     await context.sync();
 
-    // 1. Handle groups recursively
-    if (shape.type === PowerPoint.ShapeType.group && shape.groupItems) {
-        const groupItems = shape.groupItems;
-        groupItems.load("items");
-        await context.sync();
-
-        if (groupItems.items) {
-            for (const subShape of groupItems.items) {
-                await processShapeCandidateBased(context, subShape, radiusPts, applyChanges, summary);
-            }
-        }
+    // ------------------------------------------------------------
+    // Deduplication: ensure each shape is processed only once per run
+    // ------------------------------------------------------------
+    if (processedIds && processedIds.has(shape.id)) {
         return;
+    }
+
+    if (processedIds) {
+        processedIds.add(shape.id);
     }
 
     summary.shapesProcessed++;
 
-    // 2. Only geometric shapes
-    if (shape.type !== PowerPoint.ShapeType.geometricShape) {
-        summary.shapesSkipped++;
-        return;
-    }
-
-    const adjustments = shape.adjustments;
-    let count = 0;
-    let firstVal = undefined;
-
-    if (adjustments) {
-        adjustments.load("count");
-        await context.sync();
-        count = adjustments.count;
-
-        if (count > 0) {
-            const res = adjustments.get(0);
+    // ------------------------------------------------------------
+    // Group handling: recurse into children, do not process the group itself
+    // ------------------------------------------------------------
+ 
+    if (shape.type === PowerPoint.ShapeType.group) {
+        try {
+             const groupShapes = shape.group.shapes;
+            groupShapes.load("items");
             await context.sync();
-            firstVal = res.value;
+
+            for (const child of groupShapes.items || []) {
+                 await processShapeCandidateBased(
+                    context,
+                    child,
+                    radiusPts,
+                    applyChanges,
+                    summary,
+                    processedIds
+                );
+            }
+        } catch (e) {
+            console.warn("Could not process group shapes:",
+                {
+                    shapeId: shape.id,
+                    shapeName: shape.name,
+                    error: e
+                });
+            summary.shapesSkipped++;
         }
+
+        return;
     }
 
-    // Candidate logic as in debugApplyCornerRadiusOnCandidates:
-    const isCandidate =
-        shape.type === PowerPoint.ShapeType.geometricShape &&
-        count === 1 &&
-        typeof firstVal === "number" &&
-        firstVal <= 0.5;
+    // ------------------------------------------------------------
+    // Safety check: shape must have a visible fill or outline
+    // (prevents pure text boxes without geometry)
+    // ------------------------------------------------------------
+    const hasFill = shape.fill && shape.fill.type !== PowerPoint.ShapeFillType.noFill;
+    const hasLine = shape.lineFormat && shape.lineFormat.visible === true;
 
-    if (!isCandidate) {
+    if (!hasFill && !hasLine) {
+
         summary.shapesSkipped++;
         return;
     }
 
-    // Apply the corner radius
-    await applyUniformRoundedCorner(context, shape, radiusPts, applyChanges, summary);
+    // ------------------------------------------------------------
+    // Adjustment-based candidate detection (core logic)
+    // ------------------------------------------------------------
+    const adjustments = shape.adjustments;
+
+    if (!adjustments) {
+
+        summary.shapesSkipped++;
+        return;
+    }
+
+    adjustments.load("count");
+    await context.sync();
+
+    if (adjustments.count !== 1) {
+        
+        summary.shapesSkipped++;
+        return;
+    }
+
+    // Read the actual adjustment value (corner radius)
+    const adj0 = adjustments.get(0);
+    await context.sync();
+
+    const firstVal = adj0.value;
+
+    // Candidate heuristic: looks like a rounded rectangle
+    if (typeof firstVal !== "number" || firstVal < 0 || firstVal > 0.5) {
+
+        summary.shapesSkipped++;
+        return;
+    }
+
+    // ------------------------------------------------------------
+    // Valid candidate: apply the uniform rounded corner logic
+    // ------------------------------------------------------------
+    await applyUniformRoundedCorner(
+        context,
+        shape,
+        radiusPts,
+        applyChanges,
+        summary
+    );
 }
+
+
+    
 
 /**
  * Applies the corner radius to a geometric shape using Adjustments(0).
@@ -227,322 +308,144 @@ async function applyUniformRoundedCorner(context, shape, radiusPts, applyChanges
     const minDim = Math.min(width, height);
     let adjValue = radiusPts / minDim;
 
-    // clamp 0..0.5 (similar to the VBA logic)
+    // Clamp to 0..0.5
     if (adjValue < 0) adjValue = 0;
     if (adjValue > 0.5) adjValue = 0.5;
 
     const adjustments = shape.adjustments;
 
     try {
-        // Read current value
-        const adj0 = adjustments.get(0);  // ClientResult<number>
+        // Read current value (needed for undo).
+        const adj0 = adjustments.get(0);
         await context.sync();
         const oldValue = adj0.value;
 
         summary.shapesWithAdjustment++;
 
-        // Remember old value for undo (only if we are actually changing things)
         if (applyChanges && lastNormalizationUndoData) {
-            lastNormalizationUndoData.entries.push({
-                shapeId: shape.id,
-                oldValue
-            });
+            lastNormalizationUndoData.entries.push({ shapeId: shape.id, oldValue });
         }
 
         if (!applyChanges) {
-            console.log("Dry run – current radius:", oldValue, "new (simulated):", adjValue);
+            // Dry run: no changes.
             return;
         }
 
-        // Set new value
+        const isWeb = Office.context.platform === Office.PlatformType.OfficeOnline;
+
+        // 1) Insert dot if needed (forces repaint in PowerPoint for the web).
+        //    This call does its own sync only when it actually injects.
+        const injectedState = isWeb ? await injectRenderDotIfNeeded(context, shape) : null;
+
+        // 2) Queue the radius change.
         adjustments.set(0, adjValue);
+
+        // 2a) minimal nudge to prevent weird repositioning after closing and reopening
+        const originalLeft = shape.left;
+
+        shape.left = originalLeft + 0.01;
+        await context.sync();
+
+        shape.left = originalLeft;
+
+        await context.sync();
+
+        // 3) Queue dot removal + state restore (no sync here).
+        if (isWeb && injectedState) {
+            queueRestoreInjectedText(shape, injectedState);
+        }
+
+        // Commit (radius + restore) in one round-trip.
         await context.sync();
 
         summary.shapesModified++;
-        console.log("Corner radius changed from", oldValue, "to", adjValue);
     } catch (e) {
         console.log("Shape skipped, no valid Adjustment[0]:", e);
         summary.shapesSkipped++;
     }
 }
 
-// -----------------------------
-// Debug and test functions
-// -----------------------------
-
-async function debugShape(context, shape) {
-    // 1. Load basic shape data
-    shape.load([
-        "id",
-        "name",
-        "type",
-        "left",
-        "top",
-        "width",
-        "height",
-        "title",
-        "description",
-        "tags",
-        "adjustments"
-    ]);
-
-    await context.sync();
-
-    console.log("=== DebugShape start ===");
-    console.log("ID:", shape.id);
-    console.log("Name:", shape.name);
-    console.log("Type (ShapeType):", shape.type);
-    console.log("Position:", { left: shape.left, top: shape.top });
-    console.log("Size:", { width: shape.width, height: shape.height });
-    console.log("Title:", shape.title);
-    console.log("Description:", shape.description);
-    console.log("Tags:", shape.tags);
-
-    const adjustments = shape.adjustments;
-    if (adjustments) {
-        // 2. Load number of adjustments
-        adjustments.load("count");
-        await context.sync();
-
-        console.log("Adjustments.count:", adjustments.count);
-
-        if (adjustments.count > 0) {
-            // 3. Get all ClientResult objects
-            const results = [];
-            for (let i = 0; i < adjustments.count; i++) {
-                const res = adjustments.get(i);
-                results.push(res);
-            }
-
-            // 4. Sync to retrieve values
-            await context.sync();
-
-            // 5. Log values
-            results.forEach((res, index) => {
-                console.log(`Adjustments[${index}].value:`, res.value);
-            });
-        }
-    } else {
-        console.log("Adjustments: (none)");
-    }
-
-    console.log("=== DebugShape end ===");
-}
-
-// Debug: shows how the rounded-corner heuristic would decide for a shape.
-async function debugRoundedCornerHeuristic(context, shape) {
-    shape.load(["id", "name", "type", "adjustments"]);
-    await context.sync();
-
-    console.log("=== DebugRoundedCornerHeuristic start ===");
-    console.log("ID:", shape.id);
-    console.log("Name:", shape.name);
-    console.log("Type (ShapeType):", shape.type);
-
-    const adjustments = shape.adjustments;
-    if (!adjustments) {
-        console.log("Adjustments: (none) -> would be skipped");
-        console.log("=== DebugRoundedCornerHeuristic end ===");
-        return;
-    }
-
-    // Load count of adjustments
-    adjustments.load("count");
-    await context.sync();
-
-    console.log("Adjustments.count:", adjustments.count);
-
-    // Non-geometric shapes would be skipped anyway
-    if (shape.type !== PowerPoint.ShapeType.geometricShape) {
-        console.log("=> Not a GeometricShape -> would be skipped");
-        console.log("=== DebugRoundedCornerHeuristic end ===");
-        return;
-    }
-
-    // Only shapes with exactly one adjustment are candidates in this logic
-    if (adjustments.count !== 1) {
-        console.log("=> Adjustments.count != 1 -> would be skipped");
-        console.log("=== DebugRoundedCornerHeuristic end ===");
-        return;
-    }
-
-    // Original value of Adjustment(0)
-    const originalResult = adjustments.get(0);
-    await context.sync();
-    const originalValue = originalResult.value;
-
-    console.log("Original Adjustments[0].value:", originalValue);
-
-    const probeValue = 0.9; // deliberately > 0.5
-    let probedValue = null;
-    let isRoundedLike = false;
-
+async function injectRenderDotIfNeeded(context, shape) {
     try {
-        // Probe: set a high value
-        adjustments.set(0, probeValue);
+        // Load everything needed in one go.
+        shape.load(["width", "height", "textFrame/hasText", "textFrame/autoSizeSetting", "textFrame/textRange/text"]);
         await context.sync();
 
-        // Read probed value
-        const probedResult = adjustments.get(0);
+        const tf = shape.textFrame;
+        if (!tf) return null;
+
+        // If the shape already has text, do nothing.
+        if (tf.hasText === true) return null;
+
+        const state = {
+            originalText: tf.textRange?.text || "",
+            originalAuto: tf.autoSizeSetting,
+            originalW: shape.width,
+            originalH: shape.height
+        };
+
+        // Prevent auto-resize side effects.
+        tf.autoSizeSetting = "AutoSizeNone";
+        tf.textRange.text = "."; // Visible glyph -> triggers repaint in PowerPoint Web
         await context.sync();
-        probedValue = probedResult.value;
 
-        console.log("Probed Adjustments[0].value (after set 0.9):", probedValue);
+        // Restore geometry immediately (still in Web-only injection step).
+        // This avoids visible jitter while the dot exists.
+        shape.width = state.originalW;
+        shape.height = state.originalH;
 
-        shape.load("adjustments");
-        await context.sync();
-
-        const resAgain = shape.adjustments.get(0);
-        await context.sync();
-        console.log("Probed Adjustments[0].value after reload:", resAgain.value);
-
-        const MAX_ROUNDED = 0.5;
-        const EPS = 0.0001;
-
-        if (probedValue <= MAX_ROUNDED + EPS) {
-            isRoundedLike = true;
-        } else {
-            isRoundedLike = false;
-        }
+        // Do not sync here; caller will sync soon anyway.
+        // But we already synced to commit the dot. We keep geometry changes queued.
+        return state;
     } catch (e) {
-        console.log("Error while probing adjustment:", e);
-        isRoundedLike = true;
-    } finally {
-        // Restore original value
-        try {
-            adjustments.set(0, originalValue);
-            await context.sync();
-            console.log("Original Adjustments[0].value restored:", originalValue);
-        } catch (restoreError) {
-            console.log("Error while restoring original adjustment value:", restoreError);
-        }
+        console.warn("injectRenderDotIfNeeded skipped:", e);
+        return null;
     }
-
-    console.log("Heuristic isRoundedLike:", isRoundedLike);
-    console.log("=> This shape would",
-        isRoundedLike ? "BE PROCESSED" : "BE SKIPPED",
-        "by normalizeRectangleCorners().");
-    console.log("=== DebugRoundedCornerHeuristic end ===");
 }
 
-// Debug: deletes all shapes that are very likely NOT rounded / semi-rounded rectangles.
-// Only candidate shapes remain.
-async function debugFilterAndDeleteNonRoundedShapes(context, shape) {
-    shape.load(["id", "name", "type", "adjustments"]);
-    await context.sync();
+function queueRestoreInjectedText(shape, state) {
+    // Restore original text and autosize, and reset geometry.
+    // This function does NOT call context.sync(); caller batches it with other operations.
+    const tf = shape.textFrame;
+    if (!tf) return;
 
-    const adjustments = shape.adjustments;
-    let count = 0;
-    let values = [];
+    tf.textRange.text = state.originalText;
 
-    if (adjustments) {
-        adjustments.load("count");
+    if (state.originalAuto !== undefined && state.originalAuto !== null) {
+        tf.autoSizeSetting = state.originalAuto;
+    }
+
+    shape.width = state.originalW;
+    shape.height = state.originalH;
+}
+
+
+async function kickWebRenderOnSelectedSlide() {
+    const isWeb = Office.context.platform === Office.PlatformType.OfficeOnline;
+    if (!isWeb) return;
+
+    await PowerPoint.run(async (context) => {
+        const pres = context.presentation;
+
+        const sel = pres.getSelectedSlides();
+        sel.load("items");
         await context.sync();
 
-        count = adjustments.count;
+        if (!sel.items || sel.items.length === 0) return;
 
-        if (count > 0) {
-            const results = [];
-            for (let i = 0; i < count; i++) {
-                const res = adjustments.get(i);
-                results.push(res);
-            }
+        const slide = sel.items[0];
 
-            await context.sync();
-            values = results.map(r => r.value);
-        }
-    }
-
-    const isGeometric = (shape.type === PowerPoint.ShapeType.geometricShape);
-    const firstVal = values.length > 0 ? values[0] : undefined;
-
-    let isSafeNonRounded =
-        !isGeometric ||
-        count === 0 ||
-        count > 1 ||
-        (count === 1 && typeof firstVal === "number" && firstVal > 0.5);
-
-    console.log("=== debugFilterAndDeleteNonRoundedShapes ===");
-    console.log("ID:", shape.id);
-    console.log("Name:", shape.name);
-    console.log("Type:", shape.type);
-    console.log("Adjustments.count:", count);
-    console.log("Adjustments.values:", values);
-
-    if (isSafeNonRounded) {
-        console.log("=> Shape is considered definitely NOT rounded/semi-rounded -> DELETING.");
-        try {
-            shape.delete();
-            await context.sync();
-        } catch (e) {
-            console.log("Error while deleting shape:", e);
-        }
-    } else {
-        console.log("=> Shape is kept (candidate for normalization).");
-    }
-
-    console.log("============================================");
+        // Render-Kicker: Folie als kleines Bild rendern lassen
+        // Slide.getImageAsBase64 ist in der Slide API dokumentiert. [1](https://stackoverflow.com/questions/65688141/is-it-possible-to-select-update-shape-icons-image-properties-using-ms-powerpoint)
+        //const img = slide.getImageAsBase64({ width: 32 });
+        //await context.sync();
+        //void img.value; // Ergebnis ignorieren
+    });
 }
 
-// Debug: applies applyUniformRoundedCorner to all shapes that are candidates
-// according to the filter heuristic.
-async function debugApplyCornerRadiusOnCandidates(context, slide, radiusPts) {
-    slide.shapes.load("items");
-    await context.sync();
 
-    console.log("=== debugApplyCornerRadiusOnCandidates ===");
-    console.log("Shapes found:", slide.shapes.items.length);
 
-    for (const shape of slide.shapes.items) {
-        shape.load(["id", "name", "type", "adjustments"]);
-    }
-    await context.sync();
 
-    for (const shape of slide.shapes.items) {
-        const isGeometric = shape.type === PowerPoint.ShapeType.geometricShape;
-        const adjustments = shape.adjustments;
-
-        let count = 0;
-        let firstVal = undefined;
-
-        if (adjustments) {
-            adjustments.load("count");
-            await context.sync();
-            count = adjustments.count;
-
-            if (count > 0) {
-                const res = adjustments.get(0);
-                await context.sync();
-                firstVal = res.value;
-            }
-        }
-
-        const isCandidate =
-            isGeometric &&
-            count === 1 &&
-            typeof firstVal === "number" &&
-            firstVal <= 0.5;
-
-        console.log(`Shape ${shape.id} "${shape.name}" – candidate?`, isCandidate);
-
-        if (!isCandidate) {
-            continue;
-        }
-
-        try {
-            console.log(`--> applying corner radius to Shape ${shape.id}: "${shape.name}"`);
-            await applyUniformRoundedCorner(context, shape, radiusPts, true, {
-                shapesModified: 0,
-                shapesSkipped: 0,
-                shapesWithAdjustment: 0
-            });
-        } catch (e) {
-            console.log(`--> ERROR applying to Shape ${shape.id}:`, e);
-        }
-    }
-
-    console.log("=== debugApplyCornerRadiusOnCandidates done ===");
-}
 
 /**
  * Undo the last normalization operation by restoring the previous adjustment values.
@@ -604,20 +507,27 @@ async function undoLastNormalization() {
  * Recursively restores adjustment[0] for shapes whose IDs are in the lookup map.
  */
 async function restoreShapeAdjustmentRecursive(context, shape, idToOldValueMap) {
-    shape.load(["id", "type", "groupItems", "adjustments"]);
+    shape.load(["id", "type", "adjustments"]);
     await context.sync();
 
     // Recurse into groups
-    if (shape.type === PowerPoint.ShapeType.group && shape.groupItems) {
-        const groupItems = shape.groupItems;
-        groupItems.load("items");
-        await context.sync();
+    if (shape.type === PowerPoint.ShapeType.group) {
+        try {
+            const groupShapes = shape.group.shapes;
+            groupShapes.load("items");
+            await context.sync();
 
-        if (groupItems.items) {
-            for (const subShape of groupItems.items) {
-                await restoreShapeAdjustmentRecursive(context, subShape, idToOldValueMap);
+            for (const subShape of groupShapes.items || []) {
+                await restoreShapeAdjustmentRecursive(
+                    context,
+                    subShape,
+                    idToOldValueMap
+                );
             }
+        } catch (e) {
+            console.warn("Could not restore group children:", shape.id, e);
         }
+
         return;
     }
 
@@ -631,73 +541,5 @@ async function restoreShapeAdjustmentRecursive(context, shape, idToOldValueMap) 
                 console.log("Failed to restore adjustment for shape", shape.id, e);
             }
         }
-    }
-}
-
-
-/**
- * Optional test function: inserts a single roundRectangle on the first slide
- * and sets its corner radius to 0.3.
- */
-async function run() {
-    try {
-        await PowerPoint.run(async (context) => {
-            console.log(
-                "PowerPointApi 1.10 supported?",
-                Office.context.requirements.isSetSupported("PowerPointApi", "1.10")
-            );
-
-            const slides = context.presentation.slides;
-            slides.load("items");
-            await context.sync();
-
-            if (slides.items.length === 0) {
-                console.log("No slides found.");
-                showNotification("Test aborted", "No slide was found in the presentation.");
-                return;
-            }
-
-            const slide = slides.items[0];
-
-            const shape = slide.shapes.addGeometricShape(
-                PowerPoint.GeometricShapeType.roundRectangle
-            );
-            shape.left = 100;
-            shape.top = 100;
-            shape.width = 200;
-            shape.height = 100;
-
-            shape.load(["width", "height", "type"]);
-            await context.sync();
-
-            console.log("Shape inserted. Width:", shape.width, "Height:", shape.height);
-            console.log("Shape type:", shape.type);
-
-            const adjustments = shape.adjustments;
-            console.log("adjustments object:", adjustments);
-
-            try {
-                const adj0 = adjustments.get(0);
-                await context.sync();
-                console.log("Corner radius before:", adj0.value);
-
-                adjustments.set(0, 0.3);
-                await context.sync();
-
-                console.log("Corner radius after: 0.3");
-                showNotification(
-                    "Test successful",
-                    "A shape was inserted and its corner radius was set to 0.3."
-                );
-            } catch (e) {
-                console.error("Error accessing Adjustment(0):", e);
-                showNotification(
-                    "Test: No valid adjustment",
-                    "Accessing Adjustment(0) failed. Your PowerPoint client may not fully support this feature."
-                );
-            }
-        });
-    } catch (error) {
-        logError("Test run()", error);
     }
 }
