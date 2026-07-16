@@ -180,6 +180,7 @@ async function processShapeCandidateBased(
         "width",
         "height",
         "rotation",
+        "tags",
         "adjustments",
         "fill/type",
         "lineFormat/visible"
@@ -341,10 +342,75 @@ async function applyUniformRoundedCorner(context, shape, radiusPts, applyChanges
         adjustments.set(0, adjValue);
 
         // 2a) minimal nudge to prevent weird repositioning after closing and reopening
-        const originalLeft = shape.left;
+        // ------------------------------------------------------------
+        // Workaround for PowerPoint grouped-shape persistence issue.
+        //
+        // Some grouped rounded rectangles are repositioned after
+        // save/reopen when only Adjustment(0) is changed.
+        //
+        // A tiny permanent position change forces PowerPoint to
+        // persist the group geometry correctly.
+        //
+        // The workaround is applied:
+        // - only for grouped shapes (level > 0)
+        // - only if the radius actually changed
+        // - only once per shape (tracked via tag)
+        // ------------------------------------------------------------
 
-        shape.left = originalLeft + 0.01;
-        await context.sync();
+        const epsilon = 0.000001;
+        const fixTagName = "GroupPositionFixApplied";
+
+        if (
+            shape.level > 0 &&
+            Math.abs(oldValue - adjValue) > epsilon
+        ) {
+            let alreadyFixed = false;
+
+            try {
+                const tags = shape.tags;
+
+                tags.load("items");
+                await context.sync();
+
+                alreadyFixed =
+                    tags.items &&
+                    tags.items.some(
+                        t => t.key === fixTagName
+                    );
+
+            } catch (e) {
+                console.warn(
+                    "Failed to read shape tags:",
+                    shape.id,
+                    e
+                );
+            }
+
+            if (!alreadyFixed) {
+
+                shape.left = shape.left + 0.0001;
+
+                try {
+                    shape.tags.add(
+                        fixTagName,
+                        "1"
+                    );
+                } catch (e) {
+                    console.warn(
+                        "Failed to add workaround tag:",
+                        shape.id,
+                        e
+                    );
+                }
+
+                await context.sync();
+            }
+        }
+
+        
+
+        //shape.left = originalLeft + 0.01;
+        //await context.sync();
 
         //shape.left = originalLeft;
 
