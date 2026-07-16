@@ -345,16 +345,14 @@ async function applyUniformRoundedCorner(context, shape, radiusPts, applyChanges
         // ------------------------------------------------------------
         // Workaround for PowerPoint grouped-shape persistence issue.
         //
-        // Some grouped rounded rectangles are repositioned after
-        // save/reopen when only Adjustment(0) is changed.
+        // Changing Adjustment(0) on grouped rounded rectangles can
+        // cause wrong positions after save/reopen.
         //
-        // A tiny permanent position change forces PowerPoint to
+        // A very small permanent movement forces PowerPoint to
         // persist the group geometry correctly.
         //
-        // The workaround is applied:
-        // - only for grouped shapes (level > 0)
-        // - only if the radius actually changed
-        // - only once per shape (tracked via tag)
+        // To avoid drifting away over multiple executions, the shape
+        // alternates between +0.01 pt and -0.01 pt.
         // ------------------------------------------------------------
 
         const epsilon = 0.000001;
@@ -364,7 +362,7 @@ async function applyUniformRoundedCorner(context, shape, radiusPts, applyChanges
             shape.level > 0 &&
             Math.abs(oldValue - adjValue) > epsilon
         ) {
-            let alreadyFixed = false;
+            let direction = 1;
 
             try {
                 const tags = shape.tags;
@@ -372,42 +370,34 @@ async function applyUniformRoundedCorner(context, shape, radiusPts, applyChanges
                 tags.load("items");
                 await context.sync();
 
-                alreadyFixed =
-                    tags.items &&
-                    tags.items.some(
-                        t => t.key === fixTagName
-                    );
+                const existingTag = tags.items.find(
+                    t => t.key === fixTagName
+                );
+
+                if (existingTag && existingTag.value === "1") {
+                    direction = -1;
+                }
+
+                // Apply persistent nudge.
+                shape.left = shape.left + (0.01 * direction);
+
+                // Store direction for next execution.
+                shape.tags.add(
+                    fixTagName,
+                    direction.toString()
+                );
+
+                await context.sync();
 
             } catch (e) {
                 console.warn(
-                    "Failed to read shape tags:",
+                    "Failed to apply grouped-shape persistence workaround:",
                     shape.id,
                     e
                 );
             }
-
-            if (!alreadyFixed) {
-
-                shape.left = shape.left + 0.0001;
-
-                try {
-                    shape.tags.add(
-                        fixTagName,
-                        "1"
-                    );
-                } catch (e) {
-                    console.warn(
-                        "Failed to add workaround tag:",
-                        shape.id,
-                        e
-                    );
-                }
-
-                await context.sync();
-            }
         }
 
-        
 
         //shape.left = originalLeft + 0.01;
         //await context.sync();
